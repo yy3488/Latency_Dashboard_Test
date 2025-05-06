@@ -27,11 +27,12 @@ def country_to_continent(code):
 # ---------- Load Data ----------
 @st.cache_data
 def load_data():
+    data_url = "https://drive.google.com/uc?export=download&id=<1eReDUwA0950HqujraRD2te9iA9J3Uoih>"
     col_names = [
         'taskid', 'clientid', 'clientip', 'clientcountry', 'clientisp', 'clientlat', 'clientlng',
         'destcid', 'destip', 'destcountry', 'destisp', 'destlat', 'destlng', 'timestamp', 'ttl'
     ]
-    df = pd.read_csv("/Users/yuanyuan/Downloads/p2025_04_18-p2025_04_23.csv", header=None, names=col_names, on_bad_lines='skip')
+    df = pd.read_csv(data_url, header=None, names=col_names, on_bad_lines='skip')
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', errors='coerce')
     df = df.dropna(subset=['timestamp', 'clientcountry', 'clientisp', 'destcountry', 'destisp'])
     df = df[(df['timestamp'] >= pd.Timestamp('2025-04-18')) & (df['timestamp'] <= pd.Timestamp('2025-04-23'))]

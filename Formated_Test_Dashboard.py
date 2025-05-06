@@ -27,7 +27,7 @@ def country_to_continent(code):
 # ---------- Load Data ----------
 @st.cache_data
 def load_data():
-    data_url = "https://drive.google.com/uc?export=download&id=1eReDUwA0950HqujraRD2te9iA9J3Uoih"
+    data_url = "https://www.dropbox.com/scl/fi/2o01yjrep18j5e6ir56kd/p2025_04_18-p2025_04_23.csv?rlkey=lfk8lbwvuxqw8b2uhylwjhpvp&st=cw1l118o&dl=1"
     col_names = [
         'taskid', 'clientid', 'clientip', 'clientcountry', 'clientisp', 'clientlat', 'clientlng',
         'destcid', 'destip', 'destcountry', 'destisp', 'destlat', 'destlng', 'timestamp', 'ttl'

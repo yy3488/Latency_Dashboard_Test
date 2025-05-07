@@ -6,6 +6,8 @@ from datetime import datetime
 import pycountry
 from itertools import combinations
 import plotly.graph_objects as go
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
 
 # ---------- Page Setup ----------
 st.set_page_config(page_title="Global Latency Analysis", layout="wide")

@@ -32,43 +32,20 @@ def load_data():
         'taskid', 'clientid', 'clientip', 'clientcountry', 'clientisp', 'clientlat', 'clientlng',
         'destcid', 'destip', 'destcountry', 'destisp', 'destlat', 'destlng', 'timestamp', 'ttl'
     ]
-    try:
-        # Load data in chunks to handle large file
-        chunks = pd.read_csv(data_url, header=None, names=col_names, on_bad_lines='skip', chunksize=100000)
-        df = pd.concat(chunks, ignore_index=True)
-    except Exception as e:
-        st.error(f"Failed to load data from Dropbox: {e}")
-        raise
-
-    # Preprocess the data
-    try:
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', errors='coerce')
-        df = df.dropna(subset=['timestamp', 'clientcountry', 'clientisp', 'destcountry', 'destisp'])
-        df = df[(df['timestamp'] >= pd.Timestamp('2025-04-18')) & (df['timestamp'] <= pd.Timestamp('2025-04-23'))]
-        df = df[df['ttl'] <= 100000]
-        df['ttl'] = df['ttl'].replace(-1, np.nan)
-        df['date'] = df['timestamp'].dt.date
-        df['hour'] = df['timestamp'].dt.hour
-        df['weekday'] = df['timestamp'].dt.weekday
-        df['clientcontinent'] = df['clientcountry'].apply(country_to_continent)
-        df['destcontinent'] = df['destcountry'].apply(country_to_continent)
-        df = df.dropna(subset=['clientcontinent', 'destcontinent'])
-    except Exception as e:
-        st.error(f"Error during data preprocessing: {e}")
-        raise
-
-    if df.empty:
-        st.error("DataFrame is empty after preprocessing. Please check the data source and preprocessing steps.")
-        raise ValueError("DataFrame is empty after preprocessing.")
-
+    df = pd.read_csv(data_url, header=None, names=col_names, on_bad_lines='skip')
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', errors='coerce')
+    df = df.dropna(subset=['timestamp', 'clientcountry', 'clientisp', 'destcountry', 'destisp'])
+    df = df[(df['timestamp'] >= pd.Timestamp('2025-04-18')) & (df['timestamp'] <= pd.Timestamp('2025-04-23'))]
+    df = df[df['ttl'] <= 100000]
+    df['ttl'] = df['ttl'].replace(-1, np.nan)
+    df['date'] = df['timestamp'].dt.date
+    df['hour'] = df['timestamp'].dt.hour
+    df['weekday'] = df['timestamp'].dt.weekday
+    df['clientcontinent'] = df['clientcountry'].apply(country_to_continent)
+    df['destcontinent'] = df['destcountry'].apply(country_to_continent)
+    df = df.dropna(subset=['clientcontinent', 'destcontinent'])
     return df
-
-# Load the data with error handling
-try:
-    data = load_data()
-except Exception as e:
-    st.error(f"Failed to load data: {e}")
-    data = pd.DataFrame(columns=['date', 'timestamp', 'clientcountry', 'clientisp', 'destcountry', 'destisp', 'ttl'])    
+data = load_data()  
 
 # ---------- Utility: Compute Unique Node & ISP Summary by Country (with or without group) ----------
 @st.cache_data

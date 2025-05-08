@@ -6,6 +6,7 @@ from datetime import datetime
 import pycountry
 from itertools import combinations
 import plotly.graph_objects as go
+import gc
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -35,6 +36,12 @@ def load_data():
         'destcid', 'destip', 'destcountry', 'destisp', 'destlat', 'destlng', 'timestamp', 'ttl'
     ]
     df = pd.read_csv(data_url, header=None, names=col_names, on_bad_lines='skip')
+    keep_cols = [
+        'clientid', 'clientcountry', 'clientisp',
+        'destcid', 'destcountry', 'destisp',
+        'timestamp', 'ttl'
+    ]
+    df = df[keep_cols]
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', errors='coerce')
     df = df.dropna(subset=['timestamp', 'clientcountry', 'clientisp', 'destcountry', 'destisp'])
     df = df[(df['timestamp'] >= pd.Timestamp('2025-04-18')) & (df['timestamp'] <= pd.Timestamp('2025-04-23'))]
@@ -50,39 +57,32 @@ def load_data():
 data = load_data()  
 
 # ---------- Utility: Compute Unique Node & ISP Summary by Country (with or without group) ----------
-@st.cache_data
+@st.cache_data(max_entries=5)
 def compute_summary_table(df):
-    has_group = 'group' in df.columns
+    # 统一处理 client 和 dest
+    df_combined = pd.DataFrame({
+        'nodeid': pd.concat([df['clientid'], df['destcid']], ignore_index=True),
+        'country': pd.concat([df['clientcountry'], df['destcountry']], ignore_index=True),
+        'isp': pd.concat([df['clientisp'], df['destisp']], ignore_index=True)
+    })
 
-    client_df = df[['clientid', 'clientcountry', 'clientisp']].copy()
-    client_df = client_df.rename(columns={'clientid': 'nodeid', 'clientcountry': 'country', 'clientisp': 'isp'})
-    if has_group:
-        client_df['group'] = df['group']
+    if 'group' in df.columns:
+        df_combined['group'] = pd.concat([df['group'], df['group']], ignore_index=True)
 
-    dest_df = df[['destcid', 'destcountry', 'destisp']].copy()
-    dest_df = dest_df.rename(columns={'destcid': 'nodeid', 'destcountry': 'country', 'destisp': 'isp'})
-    if has_group:
-        dest_df['group'] = df['group']
+    df_combined.dropna(subset=['nodeid', 'country', 'isp'], inplace=True)
 
-    combined_df = pd.concat([client_df, dest_df], ignore_index=True)
-    drop_cols = ['nodeid', 'country']
-    if has_group:
-        drop_cols.append('group')
-    combined_df = combined_df.dropna(subset=drop_cols)
-
-    if has_group:
-        summary = combined_df.groupby(['group', 'country']).agg(
+    if 'group' in df.columns:
+        summary = df_combined.groupby(['group', 'country']).agg(
             unique_nodes=('nodeid', 'nunique'),
             isp_count=('isp', 'nunique')
         ).reset_index()
     else:
-        summary = combined_df.groupby('country').agg(
+        summary = df_combined.groupby('country').agg(
             unique_nodes=('nodeid', 'nunique'),
             isp_count=('isp', 'nunique')
         ).reset_index()
 
     summary['continent'] = summary['country'].apply(country_to_continent)
-
     return summary
 
 # ---------- BLOCK 1: Global Latency Overview ----------
@@ -131,6 +131,9 @@ with st.expander("1. Global Metrics and Trends", expanded=True):
     fig_latency = px.line(latency_grouped, x='group', y='ttl', title="Average Latency Over Time", labels={'ttl': 'Avg Latency (ms)', 'group': freq})
     st.plotly_chart(fig_latency, use_container_width=True)
 
+    del df1, summary_table, unique_nodes_trend, latency_grouped, fig_nodes, fig_latency
+    gc.collect()
+
 # ---------- BLOCK 2: Continent Latency Analysis ----------
 st.header("🌍 Continent Latency Analysis")
 st.caption("Explore latency within and across continents. Use the date range filter to narrow down the analysis period.")
@@ -138,10 +141,12 @@ st.caption("Explore latency within and across continents. Use the date range fil
 with st.expander("2. Continent-Level Insights", expanded=True):
     # Filter: Date Range
     continent_date_range = st.date_input("Select Date Range", [data['date'].min(), data['date'].max()], key='continent_date')
-    df2 = data.copy()
+
     if len(continent_date_range) == 2:
         start, end = continent_date_range
-        df2 = df2[(df2['date'] >= start) & (df2['date'] <= end)]
+        df2 = data[(data['date'] >= start) & (data['date'] <= end)].copy()  # 如果后续修改列，才加 copy
+    else:
+        df2 = data
 
     # 1. Inside the Continent
     st.subheader("Latency Within Continents")
@@ -166,9 +171,10 @@ with st.expander("2. Continent-Level Insights", expanded=True):
     # 2. Cross-Continent Heatmap
     st.subheader("Cross-Continent Latency")
     st.caption("Heatmap showing average latency between continents.")
-    df2['continent_pair'] = df2.apply(
-        lambda x: '_'.join(sorted([x['clientcontinent'], x['destcontinent']])), axis=1
-    )
+
+    cc1 = df2['clientcontinent']
+    cc2 = df2['destcontinent']
+    df2.loc[:, 'continent_pair'] = np.where(cc1 < cc2, cc1 + '_' + cc2, cc2 + '_' + cc1)
 
     # Group and average latency per continent-pair
     heat_data = df2.groupby('continent_pair')['ttl'].mean().reset_index()
@@ -185,6 +191,11 @@ with st.expander("2. Continent-Level Insights", expanded=True):
     )
     st.plotly_chart(fig_heat, use_container_width=True)
 
+
+    del df2, same_continent, continent_latency, fig_continent
+    del cc1, cc2, heat_data, heatmap_df, heatmap_symmetric, fig_heat
+    gc.collect()
+
 # ---------- BLOCK 3: Cross-Country Latency Analysis ----------
 st.header("🗺️ Cross-Country Latency Analysis")
 st.caption("Analyze latency between countries. Filter by date range, continent, or specific countries to customize the heatmap.")
@@ -200,6 +211,7 @@ with st.expander("Country-Level Insights", expanded=True):
         filtered_cc = filtered_cc[(filtered_cc['date'] >= date_range3[0]) & (filtered_cc['date'] <= date_range3[1])]
 
     country_summary = compute_summary_table(filtered_cc)
+
     # Select countries by logic
     if selected_continent:
         top_countries = country_summary[
@@ -222,15 +234,16 @@ with st.expander("Country-Level Insights", expanded=True):
         ].copy()
 
     # Create symmetric pair keys
-    cc_filtered['country_pair'] = cc_filtered.apply(
-        lambda x: '_'.join(sorted([x['clientcountry'], x['destcountry']])), axis=1
-    )
+    cc1 = cc_filtered['clientcountry']
+    cc2 = cc_filtered['destcountry']
+    cc_filtered.loc[:, 'country_pair'] = np.where(cc1 < cc2, cc1 + '_' + cc2, cc2 + '_' + cc1)
 
     # Group and pivot for heatmap
     st.subheader("Country-to-Country Latency Heatmap")
     st.caption("Symmetric heatmap showing average latency between selected countries.")
     heatmap_data = cc_filtered.groupby('country_pair')['ttl'].mean().reset_index()
     heatmap_data[['country1', 'country2']] = heatmap_data['country_pair'].str.split('_', expand=True)
+
     pivot_table = heatmap_data.pivot(index='country1', columns='country2', values='ttl')
     pivot_symmetric = pivot_table.combine_first(pivot_table.T)
 
@@ -242,6 +255,10 @@ with st.expander("Country-Level Insights", expanded=True):
         labels={"x": "Country", "y": "Country", "color": "Avg Latency (ms)"}
     )
     st.plotly_chart(fig_cc_heatmap, use_container_width=True)
+
+    del filtered_cc, cc_filtered, heatmap_data, pivot_table, pivot_symmetric
+    del cc1, cc2, fig_cc_heatmap, country_summary
+    gc.collect()
 
 # -------------- Block 4: ISP Latency Analysis --------------
 st.header("📡 ISP Latency Analysis")
@@ -262,15 +279,16 @@ filtered_block4 = filtered_block4[
 ]
 
 # Calculate within-Country Metrics
-@st.cache_data
+@st.cache_data(max_entries=3)
 def compute_block4_metrics(df):
-    client_df = df[['clientid', 'clientcountry', 'clientisp']].rename(
-        columns={'clientid': 'nodeid', 'clientcountry': 'country', 'clientisp': 'isp'}
-    )
-    dest_df = df[['destcid', 'destcountry', 'destisp']].rename(
-        columns={'destcid': 'nodeid', 'destcountry': 'country', 'destisp': 'isp'}
-    )
-    all_nodes = pd.concat([client_df, dest_df], ignore_index=True).dropna()
+    all_nodes = pd.concat([
+        df[['clientid', 'clientcountry', 'clientisp']].rename(columns={
+            'clientid': 'nodeid', 'clientcountry': 'country', 'clientisp': 'isp'
+        }),
+        df[['destcid', 'destcountry', 'destisp']].rename(columns={
+            'destcid': 'nodeid', 'destcountry': 'country', 'destisp': 'isp'
+        })
+    ], ignore_index=True).dropna()
 
     isp_count = all_nodes.groupby('country')['isp'].nunique().reset_index(name='isp_count')
     node_per_isp = all_nodes.groupby(['country', 'isp'])['nodeid'].nunique().reset_index(name='node_count')
@@ -297,7 +315,6 @@ with st.expander("1. Country ISP and Latency Overview", expanded=True):
     st.markdown("#### 📶 ISP Count, Concentration & Latency per Country")
     st.caption("Filtered to top 50 countries by unique node count based on selected date range.")
 
-    # 子模块 1 的 filter：可多选国家，默认 top50 全选
     selected_countries1 = st.multiselect(
         "Select Countries (default: all top 50)",
         options=top50_countries,
@@ -329,39 +346,15 @@ with st.expander("1. Country ISP and Latency Overview", expanded=True):
     st.caption("Scatter plot showing the relationship between Top 3 ISP concentration and average latency. Point size reflects total nodes.")
     # Create scatter plot without trendline
     fig_top3_ratio = px.scatter(
-        sub1_df,
-        x='top3_ratio',
-        y='avg_latency',
-        text='country',
-        size='total_nodes',
-        hover_data=['total_nodes'],
+        sub1_df, x='top3_ratio', y='avg_latency', text='country', size='total_nodes', hover_data=['total_nodes'],
         title="Top 3 ISP Node Ratio vs. In-Country Avg Latency",
         labels={"top3_ratio": "Top 3 ISP Ratio", "avg_latency": "Avg Latency (ms)"}
     )
-
-    fig_top3_ratio.update_traces(
-        textposition='top center'  # Move text labels above the points
-    )
-
-    # Calculate OLS trendline manually
-    x = sub1_df['top3_ratio'].dropna()
-    y = sub1_df['avg_latency'].dropna()
-    coeffs = np.polyfit(x, y, 1)  # Linear fit (degree=1)
+    fig_top3_ratio.update_traces(textposition='top center')
+    coeffs = np.polyfit(sub1_df['top3_ratio'].dropna(), sub1_df['avg_latency'].dropna(), 1)
     trendline = np.poly1d(coeffs)
-    x_trend = np.linspace(x.min(), x.max(), 100)
-    y_trend = trendline(x_trend)
-
-    # Add trendline as a new trace
-    fig_top3_ratio.add_trace(
-        go.Scatter(
-            x=x_trend,
-            y=y_trend,
-            mode='lines',
-            name='Trendline',
-            line=dict(color='red')
-        )
-    )
-
+    x_trend = np.linspace(sub1_df['top3_ratio'].min(), sub1_df['top3_ratio'].max(), 100)
+    fig_top3_ratio.add_trace(go.Scatter(x=x_trend, y=trendline(x_trend), mode='lines', name='Trendline', line=dict(color='red')))
     st.plotly_chart(fig_top3_ratio, use_container_width=True)
 
     # --- 图 3：ISP 总数量 vs 平均延迟 ---
@@ -369,38 +362,19 @@ with st.expander("1. Country ISP and Latency Overview", expanded=True):
     st.caption("Scatter plot showing the relationship between the number of ISPs and average latency. Point size reflects total nodes.")
     # Create scatter plot without trendline
     fig_isp_latency = px.scatter(
-        sub1_df,
-        x='isp_count',
-        y='avg_latency',
-        text='country',
-        size='total_nodes',
-        hover_data=['total_nodes'],
+        sub1_df, x='isp_count', y='avg_latency', text='country', size='total_nodes', hover_data=['total_nodes'],
         title="Total ISP Count vs. In-Country Avg Latency",
         labels={"isp_count": "Number of ISPs", "avg_latency": "Avg Latency (ms)"}
     )
-    fig_isp_latency.update_traces(
-        textposition='top center'  # Move text labels above the points
-    )
-
-    # Calculate OLS trendline manually
-    x = sub1_df['isp_count'].dropna()
-    y = sub1_df['avg_latency'].dropna()
-    coeffs = np.polyfit(x, y, 1)  # Linear fit (degree=1)
-    trendline = np.poly1d(coeffs)
-    x_trend = np.linspace(x.min(), x.max(), 100)
-    y_trend = trendline(x_trend)
-
-    # Add trendline as a new trace
-    fig_isp_latency.add_trace(
-        go.Scatter(
-            x=x_trend,
-            y=y_trend,
-            mode='lines',
-            name='Trendline',
-            line=dict(color='red')
-        )
-    )
+    fig_isp_latency.update_traces(textposition='top center')
+    coeffs2 = np.polyfit(sub1_df['isp_count'].dropna(), sub1_df['avg_latency'].dropna(), 1)
+    fig_isp_latency.add_trace(go.Scatter(x=np.linspace(sub1_df['isp_count'].min(), sub1_df['isp_count'].max(), 100),
+                                         y=np.poly1d(coeffs2)(np.linspace(sub1_df['isp_count'].min(), sub1_df['isp_count'].max(), 100)),
+                                         mode='lines', name='Trendline', line=dict(color='red')))
     st.plotly_chart(fig_isp_latency, use_container_width=True)
+
+    del sub1_df, fig_isp_count, fig_top3_ratio, fig_isp_latency, coeffs, coeffs2
+    gc.collect()
 
 # ---------- Sub-block 2: Same vs Different ISP Latency Comparison ----------
 with st.expander("2. Same vs Different ISP Latency Comparison", expanded=True):
@@ -417,6 +391,8 @@ with st.expander("2. Same vs Different ISP Latency Comparison", expanded=True):
     fig_box = px.box(sub2_df, x='clientcountry', y='ttl', color='same_isp',
                      title="Latency Distribution: Same vs Different ISP")
     st.plotly_chart(fig_box)
+    del sub2_df, fig_box
+    gc.collect()
 
 # ---------- Sub-block 3: Country ISP Detail View ----------
 with st.expander("3. Detailed ISP Latency View by Country", expanded=True):
@@ -443,6 +419,8 @@ with st.expander("3. Detailed ISP Latency View by Country", expanded=True):
         labels={"x": "Dest ISP", "y": "Client ISP", "color": "Latency (ms)"}
     )
     st.plotly_chart(fig_isp_heatmap, use_container_width=True)
+    del detail_df, intra_df, isp_latency, isp_summary, fig_isp_heatmap
+    gc.collect()
 
 # -------------- Block 5: Time Analysis --------------
 st.header("🕒 Time-Based Latency Analysis")
@@ -477,4 +455,6 @@ with st.expander("Time-Level Insights", expanded=True):
     fig_week = px.bar(week_stat, x='day_type', y='ttl', title="Latency on Weekdays vs Weekends")
     st.plotly_chart(fig_week, use_container_width=True)
 
+    del time_df, time_same, time_hour, week_stat, fig_time_hour, fig_week
+    gc.collect()
 # ---------- End of Dashboard ----------
